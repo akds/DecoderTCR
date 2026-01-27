@@ -132,8 +132,6 @@ DecoderTCR/
     ├── model/
     │   ├── __init__.py
     │   └── DecoderTCR.py        # Model classes
-    ├── module/
-    │   └── __init__.py
     └── utils/
         ├── __init__.py
         ├── model_zoo.py          # ESM model loader
