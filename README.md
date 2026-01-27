@@ -1,6 +1,6 @@
 # DecoderTCR
 
-A protein language model package for TCR-pMHC interaction prediction and pMHC binding scoring.
+A protein language model for TCR-pMHC modeling.
 
 ## Installation
 
