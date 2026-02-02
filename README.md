@@ -134,7 +134,7 @@ DecoderTCR/
     │   └── DecoderTCR.py        # Model classes
     └── utils/
         ├── __init__.py
-        ├── model_zoo.py          # ESM model loader
+        ├── model_zoo.py          # Base model loader
         ├── tokenizer.py          # Sequence tokenization
         ├── scoring.py            # Scoring functions
         ├── predict_TpM.py        # TCR-pMHC prediction
