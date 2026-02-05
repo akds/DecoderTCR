@@ -88,6 +88,8 @@ python -m DecoderTCR.utils.predict_pMHC \
 
 ## Available Models
 
+Pretrained checkpoints are avaliable at [Huggingface](https://huggingface.co/biohub/DecoderTCR)
+
 | Model | Parameters |
 |-------|------------|
 | DecoderTCR_650M | 650M |
