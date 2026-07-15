@@ -1,26 +1,38 @@
-[build-system]
-requires = ["hatchling>=1.24"]
-build-backend = "hatchling.build"
-
 [project]
 name = "DecoderTCR"
-version = "0.1.0"
-description = "DecoderTCR"
+version = "0.3.0"
+description = "DecoderTCR V0.3: TCR-pMHC masked-LM scoring on ESM2 and ESMC backbones"
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
-requires-python = ">=3.9"
 dependencies = [
-  "torch>=2.2",
-  "numpy>=1.24",
-  "einops>=0.7",
-  "fair-esm>=2.0",
-  "lightning>=2.0",
+    "torch>=2.5",
+    "lightning>=2.4",
+    "numpy>=2.2",
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "scikit-learn>=1.5",
+    "tqdm>=4.67",
+    "einops>=0.8",          # ESMC
+    "attrs>=24",            # ESMC esmc.py: `from attr import dataclass`
+    "tokenizers>=0.21",     # ESMC HF tokenizer
+    "transformers>=4.48",   # ESMC tokenizer base
+    "huggingface-hub>=1.0", # scripts/download_weights.py (weights fetch)
+    "pyyaml>=6.0",
+    "matplotlib>=3.10",     # Demo notebook + results figures
+    "logomaker>=0.8",       # peptide-motif logos
+    "stitchr>=0.6",         # default V/J-gene -> full TCR reconstruction. Run `stitchrdl -s human` once
+    "setuptools",
 ]
 
+[dependency-groups]
+dev = ["ipykernel", "jupyter-client", "ipython", "nbconvert>=7", "pytest>=7.0", "debugpy"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/DecoderTCR"]
-
-[tool.hatch.build.targets.sdist]
-include = ["src", "README.md"]
-
-[project.optional-dependencies]
-dev = ["pytest", "ruff", "mypy", "build", "twine"]
+# Three top-level import packages live under src/: the DecoderTCR package plus the
+# two bundled backbones (Meta ESM2 as `esm`, Chan Zuckerberg Biohub ESMC as `esmc`,
+# github.com/Biohub/esm).
+packages = ["src/DecoderTCR", "src/esm", "src/esmc"]
