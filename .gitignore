@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# uv / venv
+.venv/
+
+# local scratch
+*.tmp
+/tmp/
+
+# run artifacts (SLURM logs, profiling output)
+*.out
+/cpu_profile*.csv
+
+# cluster launch scripts (env-specific paths/partitions, not part of the release)
+/scripts/*.sbatch
+
+# Model weights: checkpoints/ holds multi-GB files downloaded from HuggingFace via
+# scripts/download_weights.py. Never commit them. Recreate via checkpoints/README.md.
+/checkpoints/*
+!/checkpoints/README.md
+
+# HF upload staging bundle (symlinks to checkpoints/ + generated model card). Regenerate as needed.
+/hf_release/
+
+# internal-only tooling (profiler etc.), not part of the release
+/internal/

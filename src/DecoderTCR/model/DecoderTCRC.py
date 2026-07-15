@@ -1,44 +1,47 @@
-"""DecoderTCR: TCR-pMHC masked-LM backbone built on Meta ESM2.
+"""DecoderTCR-ESMC: TCR-pMHC masked-LM backbone built on Chan Zuckerberg Biohub ESMC (github.com/Biohub/esm).
 
-`DecoderTCR` wraps a raw `ESM2`. `DecoderTCRModel` is the Lightning module whose
-`.ckpt` files are released. Both expose the same forward contract as the ESMC
-sibling (`DecoderTCRC`), so the scoring code in `DecoderTCR.utils.scoring` runs
-unchanged against either backbone.
+`DecoderTCRC` wraps an `ESMC`. `DecoderTCRCModel` is the Lightning module
+whose `.ckpt` files are released. Its `forward` returns the SAME dict contract as
+the ESM2 sibling so `DecoderTCR.utils.scoring` runs unchanged against either backbone.
 
-    model = DecoderTCRModel.load_from_checkpoint(path, base_model="ESM2_3B")
-    esm2 = model.model.model            # the raw ESM2 (dict-returning forward)
+    model = DecoderTCRCModel.load_from_checkpoint(path, use_packed_flash=False)
+    wrapper = model.model            # the DecoderTCRC wrapper (dict-returning forward)
+
+Notable differences from the ESM2-based DecoderTCR:
+- ESMC has NO `token_dropout`. The model sees `<mask>` embeddings directly.
+- ESMC has NO contact head. `get_contact` is removed.
+- ESMC's `sequence_logits` last dim is 64 (not the alphabet size 33). Masked-peptide
+  PLL indexes amino-acid token ids in [0, 32], which line up across both heads, so the
+  extra logit channels are simply never scored.
+- At inference, always load with `use_packed_flash=False`: the packed-flash (FA4) path
+  only accepts bf16/fp16, but inference runs fp32 by default. Weights are kernel-independent.
 """
 
 import logging
 import math
-import re
 
 import lightning as pl
 import torch
 
-from esm.model.esm2 import ESM2
-from DecoderTCR.constants import ALPHABET, ESM2_ARCH
+from esmc.models.esmc import ESMC
+from esmc.tokenization import get_esmc_model_tokenizers
+from DecoderTCR.constants import DECODERTCRC_ARCH
 
 logger = logging.getLogger(__name__)
 
 
 def _load_weights(model, path):
-    """Load weights from a checkpoint file into an ESM2 model.
+    """Load weights into an ESMC model.
 
-    Handles three formats:
-    - ESM2 hub .pt  (has "model" + "cfg" keys, prefixed state_dict)
-    - Lightning .ckpt (has "state_dict" key with "model.model." prefix)
-    - Plain state_dict (keys match model directly)
+    Supports two formats:
+    - Plain state_dict (the Chan Zuckerberg Biohub ESMC .pth/.pt files at
+      checkpoints/base_models/ESMC_*.pt): keys match `model.state_dict()` directly.
+    - Lightning .ckpt: keys carry a "model.model." prefix from the wrapper hierarchy
+      (DecoderTCRCModel.model = DecoderTCRC, and DecoderTCRC.model = ESMC).
     """
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
 
-    if "model" in ckpt and "cfg" in ckpt:
-        # ESM2 hub .pt format. Strip encoder prefixes.
-        state_dict = ckpt["model"]
-        pattern = re.compile(r"^(encoder\.sentence_encoder\.|encoder\.)")
-        state_dict = {pattern.sub("", k): v for k, v in state_dict.items()}
-    elif "state_dict" in ckpt:
-        # Lightning .ckpt format. Strip wrapper prefixes.
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
         state_dict = {}
         for k, v in ckpt["state_dict"].items():
             if k.startswith("model.model."):
@@ -49,35 +52,35 @@ def _load_weights(model, path):
 
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
-        # Contact head regression weights are expected to be missing
-        real_missing = [k for k in missing if "contact_head.regression" not in k]
-        if real_missing:
-            print(f"Warning: missing keys in checkpoint: {real_missing}")
+        print(f"Warning: missing keys in checkpoint: {missing}")
     if unexpected:
         print(f"Warning: unexpected keys in checkpoint: {unexpected}")
 
 
-class DecoderTCR(torch.nn.Module):
-    def __init__(self, base_model, init_weights=None):
-        """Build an ESM2 model from architecture params.
+class DecoderTCRC(torch.nn.Module):
+    """TCR-pMHC masked-LM backbone on Chan Zuckerberg Biohub ESMC (see module docstring)."""
 
-        Args:
-            base_model: Model size key (e.g., "ESM2_3B"). Must be in ESM2_ARCH.
-            init_weights: Path to checkpoint file, or None for random init.
-        """
+    def __init__(
+        self,
+        base_model: str,
+        init_weights: str | None = None,
+        use_packed_flash: bool = False,
+    ):
         super().__init__()
-        if base_model not in ESM2_ARCH:
+        if base_model not in DECODERTCRC_ARCH:
             raise ValueError(
                 f"Unknown base_model '{base_model}'. "
-                f"Choose from: {list(ESM2_ARCH.keys())}"
+                f"Choose from: {list(DECODERTCRC_ARCH.keys())}"
             )
-        arch = ESM2_ARCH[base_model]
-        self.model = ESM2(alphabet=ALPHABET, token_dropout=True, **arch)
-
-        # Freeze contact head (not used in MLM training).
-        # This lets us use plain DDP without find_unused_parameters overhead.
-        for p in self.model.contact_head.parameters():
-            p.requires_grad = False
+        arch = DECODERTCRC_ARCH[base_model]
+        # ESMC: SDPA-only (flash_attn stripped). PyTorch SDPA on H100
+        # auto-dispatches to FlashAttention-2/3 kernels.
+        self.model = ESMC(
+            d_model=arch["d_model"],
+            n_heads=arch["n_heads"],
+            n_layers=arch["n_layers"],
+            tokenizer=get_esmc_model_tokenizers(),
+        )
 
         if init_weights is not None:
             logger.info("Loading weights from %s", init_weights)
@@ -86,37 +89,48 @@ class DecoderTCR(torch.nn.Module):
             logger.info("Constructed %s with random init (weights restored separately "
                         "when loading from a checkpoint)", base_model)
 
-    def forward(self, data, repr_layers=None, return_contacts=False):
-        """Forward pass returning {"logits": (B, L, 33), "representations": {...}}.
+        # Optional packed-sequence FA4 path (training only, requires flash_attn + quack).
+        # Never enabled at inference. See module docstring.
+        if use_packed_flash:
+            from DecoderTCR.model.packed_flash_attention import install_packed_flash
+            print(f"Installing packed flash attention path ({arch['n_layers']} blocks rewired)")
+            install_packed_flash(self)
 
-        repr_layers/return_contacts are accepted for API parity with the ESMC
-        sibling and forwarded to the underlying ESM2.
+    def forward(self, data: torch.Tensor, repr_layers=None, return_contacts: bool = False) -> dict:
+        """Forward pass returning the same dict contract as the ESM2 wrapper.
+
+        Args:
+            data: int64 token tensor of shape (B, L), with CLS/EOS already in place.
+            repr_layers, return_contacts: ignored, accepted only for ESM2 API parity
+                so scoring code (DecoderTCR.utils.scoring) works against both backbones.
+
+        Returns:
+            {"logits": (B, L, 64), "representations": {-1: (B, L, d_model)}}
         """
-        kwargs = {"return_contacts": return_contacts}
-        if repr_layers is not None:
-            kwargs["repr_layers"] = repr_layers
-        return self.model(data, **kwargs)
+        out = self.model(sequence_tokens=data)
+        return {
+            "logits": out.sequence_logits,
+            "representations": {-1: out.embeddings},
+        }
 
-    def get_embeddings(self, data, repr_layer=None):
-        """Last-layer (or `repr_layer`) per-residue representations, (B, L, d)."""
-        layer = self.model.num_layers if repr_layer is None else repr_layer
-        out = self.model(data, repr_layers=[layer], return_contacts=False)
-        return out["representations"][layer]
-
-    def get_contact(self, data):
-        out = self.model(data, return_contacts=True, repr_layers=[self.model.num_layers])
-        return out
+    def get_embeddings(self, data, repr_layers=None, return_contacts=False):
+        """Last-layer per-residue representations, (B, L, d_model)."""
+        return self.forward(data)["representations"][-1]
 
 
-class DecoderTCRModel(pl.LightningModule):
+class DecoderTCRCModel(pl.LightningModule):
     def __init__(self, base_model, learning_rate=None, betas=(0.9, 0.999), eps=None,
                  weight_decay=None, warmup_steps=1000, init_weights=None,
                  training_config=None, lr_schedule="constant", max_steps=None,
-                 cosine_min_lr_ratio=0.0):
+                 cosine_min_lr_ratio=0.0, use_packed_flash=False):
         super().__init__()
         self.save_hyperparameters(ignore=["training_config"])
 
-        self.model = DecoderTCR(base_model=base_model, init_weights=init_weights)
+        self.model = DecoderTCRC(
+            base_model=base_model,
+            init_weights=init_weights,
+            use_packed_flash=use_packed_flash,
+        )
         self.loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
         self.loss_fct_unreduced = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
         self.epitope_weight_map = {}  # set by train.py after datamodule.setup()
@@ -130,7 +144,7 @@ class DecoderTCRModel(pl.LightningModule):
         self.cosine_min_lr_ratio = cosine_min_lr_ratio
         self.base_model_name = base_model
         self._training_config = training_config
-        self.train_dataset_size = None  # set by on_train_start from datamodule
+        self.train_dataset_size = None
         self.effective_batch_size = None
 
     def _masked_accuracy(self, logits, target):
@@ -140,13 +154,10 @@ class DecoderTCRModel(pl.LightningModule):
         return (preds[mask] == target[mask]).float().mean()
 
     def forward(self, data):
-        return self.model(data, return_contacts=False)
+        return self.model(data)
 
-    def get_embeddings(self, data, repr_layer=None):
-        return self.model.get_embeddings(data, repr_layer=repr_layer)
-
-    def get_contact(self, data):
-        return self.model.get_contact(data)
+    def get_embeddings(self, data):
+        return self.model.get_embeddings(data)
 
     def training_step(self, batch, batch_idx):
         out = self.model(batch['masked_input'])
@@ -158,11 +169,9 @@ class DecoderTCRModel(pl.LightningModule):
             # Per-sample weighted loss
             token_loss = self.loss_fct_unreduced(logits.view(-1, vocab), target.view(-1))
             token_loss = token_loss.view(bs, seq_len)
-            # Average per sample (only over masked tokens)
             mask = target != -100
             counts = mask.sum(dim=1).clamp(min=1)
             per_sample_loss = (token_loss * mask).sum(dim=1) / counts
-            # Look up epitope weight per sample
             peptides = [sp["peptide"] for sp in batch["seq_profile"]]
             weights = torch.tensor(
                 [self.epitope_weight_map.get(p, 1.0) for p in peptides],
@@ -177,7 +186,6 @@ class DecoderTCRModel(pl.LightningModule):
             target = target.view(-1)
             loss = self.loss_fct(logits, target)
 
-        # For accuracy, flatten
         logits_flat = out['logits'].view(-1, vocab)
         target_flat = batch['masked_target'].view(-1)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
@@ -209,7 +217,7 @@ class DecoderTCRModel(pl.LightningModule):
     def on_validation_epoch_end(self):
         """Run test-set evaluation (generalization tracking).
 
-        Contact eval was removed from this release wrapper.
+        Contact eval is omitted because ESMC has no contact head.
         """
         dm = getattr(self.trainer, "datamodule", None)
         if dm is None or not hasattr(dm, 'get_test_val_dataloader'):
@@ -255,7 +263,6 @@ class DecoderTCRModel(pl.LightningModule):
         dm = self.trainer.datamodule
         if dm is not None and hasattr(dm, 'train_dataset_size'):
             self.train_dataset_size = dm.train_dataset_size
-        # effective_batch_size = batch_size * num_gpus * accumulate_grad_batches
         if hasattr(self.trainer, 'accumulate_grad_batches'):
             num_gpus = self.trainer.num_devices * self.trainer.num_nodes
             bs = self.trainer.datamodule.batch_size if dm else 8
@@ -279,28 +286,19 @@ class DecoderTCRModel(pl.LightningModule):
         min_ratio = self.cosine_min_lr_ratio
 
         def lr_lambda(step):
-            # Warmup phase
             if step < warmup_steps:
                 return step / max(warmup_steps, 1)
-            # Post-warmup
             if schedule == "cosine" and max_steps is not None:
                 progress = (step - warmup_steps) / max(max_steps - warmup_steps, 1)
                 cosine = 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
                 return min_ratio + (1.0 - min_ratio) * cosine
-            return 1.0  # constant
+            return 1.0
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-                "frequency": 1,
-            },
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
         }
-
-    # -- Config serialization for checkpoint portability --
 
     def on_save_checkpoint(self, checkpoint):
         if self._training_config is not None:
