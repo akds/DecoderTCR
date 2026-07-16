@@ -251,19 +251,21 @@ If you use DecoderTCR, please cite:
 
 > Lai B, Englund M, Bharanikumar R, Nocedal I, Davariashtiyani A, Perera J, Khan AA.
 > DecoderTCR: Compositional Pretraining and Entropy-Guided Decoding for TCR-pMHC Interactions.
-> bioRxiv (2026). https://doi.org/10.64898/2026.02.04.703820
+> ICML (2026). https://openreview.net/pdf?id=yzes8qBM70
 
 ```bibtex
-@article{lai2026decodertcr,
-  title   = {DecoderTCR: Compositional Pretraining and Entropy-Guided Decoding for TCR-pMHC Interactions},
-  author  = {Lai, Boqiao and Englund, Melissa and Bharanikumar, Ramit and Nocedal, Isabel and Davariashtiyani, Ali and Perera, Jason and Khan, Aly A.},
-  journal = {bioRxiv},
-  year    = {2026},
-  doi     = {10.64898/2026.02.04.703820}
+@inproceedings{lai2026decodertcr,
+  title     = {{DecoderTCR}: Compositional Pretraining and Entropy-Guided Decoding for {TCR-pMHC} Interactions},
+  author    = {Ben Lai and Melissa Englund and Ramit Bharanikumar and Isabel Nocedal and Ali Davariashtiyani and Jason Perera and Aly A. Khan},
+  booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML 2026)},
+  series    = {Proceedings of Machine Learning Research},
+  year      = {2026},
+  publisher = {PMLR},
+  url       = {https://icml.cc/virtual/2026/poster/60562}
 }
 ```
 
 Benchmark datasets carry their own required citations (see [Results](#results)), notably
 TCRvdb ([Messemaker et al., 2025](https://doi.org/10.1101/2025.04.28.651095)).
 
-See [LICENSE.md](LICENSE.md) for the MIT first-party code and the backbone licenses.
+See [LICENSE.md](LICENSE.md) for the MIT first-party code and the ESM backbone licenses.
